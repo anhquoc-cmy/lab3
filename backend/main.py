@@ -1,5 +1,6 @@
 import os
 import sys
+import uuid
 from dotenv import load_dotenv
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -29,7 +30,6 @@ def main():
     print("TRỢ LÝ TRA CỨU & ĐẶT VÉ MÁY BAY THÔNG MINH")
     print(f"Số dư ví ban đầu: {formatted_balance}")
     print("Nhập 'exit', 'quit' hoặc 'q' để kết thúc.")
-    print("=" * 70)
 
     session_id = "main_interactive_session"
 
@@ -49,8 +49,13 @@ def main():
             if result.status == HarnessStatus.COMPLETED and result.pnr:
                 print(f"\n[THÔNG BÁO HỆ THỐNG]: Đã hoàn tất xuất vé! Mã PNR: {result.pnr}")
                 print(f"Số dư ví còn lại: {result.wallet_balance_end:,} VND".replace(",", "."))
+                print("-" * 70)
+                print("[HỆ THỐNG]: Giao dịch đã hoàn tất. Đã làm mới phiên và reset Middleware.")
+                print("=" * 70)
+                agent.reset()
+                session_id = f"session_{uuid.uuid4().hex[:8]}"
             elif result.status == HarnessStatus.TOOL_LIMIT_TRIGGERED:
-                print("\n[CẢNH BÁO HỆ THỐNG]:phát hiện lặp tool.")
+                print("\n[CẢNH BÁO HỆ THỐNG]: phát hiện lặp tool.")
 
         except KeyboardInterrupt:
             print("\n\nĐã dừng chương trình. Tạm biệt!")

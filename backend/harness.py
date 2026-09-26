@@ -107,7 +107,7 @@ class AgentHarness:
             status = HarnessStatus.AWAITING_TIME_CLARIFICATION
         elif any(k in ai_text.lower() for k in ["xác nhận", "đồng ý", "quý khách có", "đề xuất", "chốt vé"]):
             status = HarnessStatus.AWAITING_CONFIRMATION
-        elif any(k in ai_text.lower() for k in ["không tìm thấy", "không đủ tiền", "hết chỗ"]):
+        elif any(k in ai_text.lower() for k in ["không tìm thấy", "không đủ tiền", "không đủ số dư", "hết chỗ", "không còn đủ", "chưa hỗ trợ", "thiếu"]):
             status = HarnessStatus.FAILED
         else:
             status = HarnessStatus.RUNNING

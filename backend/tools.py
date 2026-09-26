@@ -118,16 +118,37 @@ def check_balance() -> dict:
         "formatted_balance": f"{balance:,} VND".replace(",", ".")
     }
 
+@tool
+def add_balance(money: int) -> dict:
+    """Nạp thêm tiền vào ví tài khoản của khách hàng. CHỈ ĐƯỢC PHÉP GỌI KHI KHÁCH HÀNG YÊU CẦU NẠP TIỀN CỤ THỂ (ví dụ: 'nạp 5 triệu vào ví', 'nạp tiền'). TUYỆT ĐỐI KHÔNG tự ý gọi tool này khi tìm kiếm vé hoặc khi số dư ví không đủ!
+
+    Args:
+        money (int): Số tiền VND cần nạp thêm vào ví.
+    Returns:
+        dict: Trạng thái và số dư sau khi nạp.
+    """
+    balance = get_wallet_balance()
+    new_balance = balance + money
+    set_wallet_balance(new_balance)
+    return {
+        "status": "success",
+        "balance": new_balance,
+        "formatted_balance": f"{new_balance:,} VND".replace(",", ".")
+    }
+
+
 AIRPORT_MAPPING = {
     "hà nội": "HAN", "ha noi": "HAN", "hn": "HAN", "han": "HAN", "nội bài": "HAN", "noi bai": "HAN",
     "đà nẵng": "DAD", "da nang": "DAD", "đn": "DAD", "dn": "DAD", "dad": "DAD",
-    "hồ chí minh": "SGN", "tp hcm": "SGN", "tphcm": "SGN", "sài gòn": "SGN", "sai gon": "SGN", "sgn": "SGN", "tân sơn nhất": "SGN", "tan son nhat": "SGN"
+    "hồ chí minh": "SGN", "tp hcm": "SGN", "tphcm": "SGN", "sài gòn": "SGN", "sai gon": "SGN", "sgn": "SGN", "tân sơn nhất": "SGN", "tan son nhat": "SGN",
+    "hàn quốc": "KOREA", "korea": "KOREA", "hq": "KOREA"
 }
 
 AIRPORT_NAMES = {
     "HAN": "Hà Nội (HAN)",
     "DAD": "Đà Nẵng (DAD)",
-    "SGN": "TP. Hồ Chí Minh (SGN)"
+    "SGN": "TP. Hồ Chí Minh (SGN)",
+    "KOREA": "Hàn Quốc (KOREA)"
 }
 
 def parse_specific_time(time_str: str | None) -> tuple[str | None, int | None]:
@@ -191,10 +212,10 @@ def normalize_airport_code(location_str: str | None) -> str | None:
     for name, code in AIRPORT_MAPPING.items():
         if name in loc:
             return code
-    loc_upper = loc.upper()
+    loc_upper = location_str.strip().upper()
     if loc_upper in AIRPORT_NAMES:
         return loc_upper
-    return None
+    return loc_upper
 
 class SmartSearchInput(BaseModel):
     day: str = Field(description="Thứ trong tuần cần tìm vé (VD: 'Thứ 4', 'Wednesday', 'Thứ 2', 'Monday'...)")
@@ -211,6 +232,10 @@ class SmartSearchInput(BaseModel):
         description="Điểm xuất phát (VD: 'Sài Gòn', 'Hà Nội', 'SGN', 'HAN') hoặc None"
     )
     seat_class: str = Field(default="ECONOMY", description="Hạng vé mong muốn (mặc định ECONOMY)")
+    passengers_count: int = Field(
+        default=1,
+        description="Số lượng hành khách hoặc số lượng vé cần tìm (VD: 1, 2, 3, 4...). Mặc định là 1 nếu khách không nói số lượng."
+    )
 
 @tool(args_schema=SmartSearchInput)
 def smart_flight_search(
@@ -218,10 +243,16 @@ def smart_flight_search(
     time_period: str | None = None,
     destination: str | None = None,
     departure: str | None = None,
-    seat_class: str = "ECONOMY"
+    seat_class: str = "ECONOMY",
+    passengers_count: int = 1,
 ) -> dict:
-    """Tự động kiểm tra lịch bay, lọc khung giờ (sáng/trưa/chiều/tối/giờ cụ thể), kiểm tra ghế trống và số dư ví. Phát hiện và cảnh báo nếu giờ bay bị lệch so với giờ khách yêu cầu."""
+    """Tự động kiểm tra lịch bay, lọc khung giờ (sáng/trưa/chiều/tối/giờ cụ thể), kiểm tra ghế trống cho số lượng khách và số dư ví. Phát hiện và cảnh báo nếu giờ bay bị lệch so với giờ khách yêu cầu."""
     try:
+        try:
+            passengers_count = max(1, int(passengers_count))
+        except Exception:
+            passengers_count = 1
+
         data = load_schedule_data()
         day_raw = day.strip().lower()
         target_day = DAY_MAPPING.get(day_raw, day_raw).lower()
@@ -237,10 +268,11 @@ def smart_flight_search(
         if not day_entry:
             return {"status": "not_found", "message": f"Không tìm thấy lịch bay cho ngày {day}."}
 
-        flights = day_entry.get("flights", [])
-        start_time, end_time, time_label, exact_time, exact_minutes = parse_time_period(time_period)
         dest_code = normalize_airport_code(destination)
         dep_code = normalize_airport_code(departure)
+
+        flights = day_entry.get("flights", [])
+        start_time, end_time, time_label, exact_time, exact_minutes = parse_time_period(time_period)
         target_class = CLASS_MAPPING.get(seat_class.strip().lower(), seat_class.strip().upper())
         wallet_balance = get_wallet_balance()
 
@@ -250,6 +282,12 @@ def smart_flight_search(
             f_from = route.get("from", "")
             f_to = route.get("to", "")
             dep_time = flight.get("dep_time", "00:00")
+
+            # Lọc tuyến bay
+            if dest_code and f_to.strip().upper() != dest_code.strip().upper():
+                continue
+            if dep_code and f_from.strip().upper() != dep_code.strip().upper():
+                continue
 
             # Tính phút cất cánh
             try:
@@ -267,8 +305,12 @@ def smart_flight_search(
             if not chosen_class:
                 continue
 
-            price = chosen_class.get("price", 0)
+            unit_price = chosen_class.get("price", 0)
             seats_left = chosen_class.get("seats_left", 0)
+            total_price = unit_price * passengers_count
+
+            has_enough_seats = (seats_left >= passengers_count)
+            can_afford = (wallet_balance >= total_price)
 
             # Tính điểm độ khớp (Scoring)
             score = 0
@@ -277,61 +319,62 @@ def smart_flight_search(
 
             if exact_minutes is not None:
                 time_diff_mins = abs(dep_mins - exact_minutes)
-                # Điểm thời gian dựa trên khoảng cách phút (càng gần giờ khách yêu cầu điểm càng cao)
                 time_score = max(0, 150 - (time_diff_mins // 2))
                 score += time_score
             elif is_time_match:
                 score += 100
-            
-            is_dest_match = True
-            if dest_code:
-                if f_to == dest_code:
-                    score += 50
-                else:
-                    is_dest_match = False
-            
-            is_dep_match = True
-            if dep_code:
-                if f_from == dep_code:
-                    score += 30
-                else:
-                    is_dep_match = False
 
-            has_seats = (seats_left > 0)
-            if has_seats:
+            if dest_code:
+                score += 50
+            if dep_code:
                 score += 30
 
-            can_afford = (wallet_balance >= price)
+            if has_enough_seats:
+                score += 50
+            else:
+                score -= 100
+
             if can_afford:
                 score += 20
 
             candidates.append({
                 "flight": flight,
                 "score": score,
-                "price": price,
+                "unit_price": unit_price,
+                "total_price": total_price,
                 "seats_left": seats_left,
                 "dep_mins": dep_mins,
                 "time_diff_mins": time_diff_mins,
                 "is_time_match": is_time_match,
-                "is_dest_match": is_dest_match,
-                "is_dep_match": is_dep_match,
-                "has_seats": has_seats,
+                "has_enough_seats": has_enough_seats,
                 "can_afford": can_afford,
             })
-
-        # Sắp xếp theo score giảm dần
-        candidates.sort(key=lambda x: (-x["score"], x["price"]))
 
         if not candidates:
             return {
                 "status": "no_match",
-                "message": f"Không có chuyến bay nào phù hợp với yêu cầu vào ngày {day_entry.get('day_vn')}."
+                "message": f"Không có chuyến bay nào phù hợp với tuyến bay và hạng vé yêu cầu vào ngày {day_entry.get('day_vn')}."
             }
 
-        best = candidates[0]
+        # Lọc các chuyến còn đủ số lượng ghế
+        available_seat_candidates = [c for c in candidates if c["has_enough_seats"]]
+        if not available_seat_candidates:
+            max_seats = max([c["seats_left"] for c in candidates])
+            return {
+                "status": "sold_out",
+                "message": f"Rất tiếc, vào ngày {day_entry.get('day_vn')} không có chuyến bay nào còn đủ {passengers_count} ghế hạng {target_class} (chuyến còn nhiều nhất chỉ có {max_seats} ghế trống).",
+                "instruction_for_agent": f"Thông báo cho khách rằng chuyến bay hạng {target_class} không còn đủ {passengers_count} chỗ (chỉ còn tối đa {max_seats} chỗ). Gợi ý khách giảm số lượng vé hoặc chọn hạng vé/ngày bay khác."
+            }
+
+        # Sắp xếp các chuyến đủ ghế theo điểm khớp cao nhất, sau đó đến tổng giá rẻ nhất
+        available_seat_candidates.sort(key=lambda x: (-x["score"], x["total_price"]))
+        best = available_seat_candidates[0]
         f_info = best["flight"]
         from_str = AIRPORT_NAMES.get(f_info['route']['from'], f_info['route']['from'])
         to_str = AIRPORT_NAMES.get(f_info['route']['to'], f_info['route']['to'])
+        unit_price = best["unit_price"]
+        total_price = best["total_price"]
+        can_afford = best["can_afford"]
 
         # Kiểm tra xem có bị lệch giờ nghiêm trọng không
         has_time_deviation = False
@@ -347,6 +390,44 @@ def smart_flight_search(
                 f"không có chuyến giờ này! Chuyến sớm nhất/gần nhất hiện có là lúc {f_info['dep_time']} "
                 f"(chênh lệch {time_diff_hours} tiếng so với giờ khách muốn)."
             )
+        else:
+            time_check_msg = f"✅ Khung giờ: {time_label} (Chuyến cất cánh lúc {f_info['dep_time']})"
+
+        # Kiểm tra số dư ví bằng code chính xác
+        if can_afford:
+            wallet_check_msg = (
+                f"✅ Số dư ví: {wallet_balance:,} VND >= Tổng tiền {total_price:,} VND "
+                f"({passengers_count} vé x {unit_price:,} VND) -> ĐỦ ĐIỀU KIỆN THANH TOÁN"
+            ).replace(",", ".")
+            remaining_str = f"{(wallet_balance - total_price):,} VND".replace(",", ".")
+        else:
+            deficit = total_price - wallet_balance
+            wallet_check_msg = (
+                f"❌ Số dư ví: {wallet_balance:,} VND < Tổng tiền {total_price:,} VND "
+                f"({passengers_count} vé x {unit_price:,} VND) -> KHÔNG ĐỦ TIỀN (Thiếu {deficit:,} VND)"
+            ).replace(",", ".")
+            remaining_str = f"Thiếu {deficit:,} VND".replace(",", ".")
+
+        seats_check_msg = f"✅ Ghế trống: Hạng {target_class} còn {best['seats_left']} ghế (yêu cầu {passengers_count} vé -> ĐỦ CHỖ)"
+
+        conditions_summary = {
+            "schedule_check": f"✅ Lịch bay: Có chuyến bay vào {day_entry.get('day_vn')} ({day_entry.get('day_of_week')})",
+            "time_check": time_check_msg,
+            "route_check": f"✅ Tuyến bay: {from_str} -> {to_str}",
+            "seats_check": seats_check_msg,
+            "wallet_check": wallet_check_msg,
+        }
+
+        # Xác định status và instruction cho Agent
+        if not can_afford:
+            status = "insufficient_funds"
+            instruction = (
+                f"BẮT BUỘC BÁO THIẾU TIỀN: Số dư ví hiện tại là {wallet_balance:,} VND, không đủ thanh toán tổng tiền {total_price:,} VND "
+                f"cho {passengers_count} vé (thiếu {(total_price - wallet_balance):,} VND). "
+                f"Hỏi khách có muốn nạp thêm tiền vào ví hoặc chọn hạng vé khác rẻ hơn không. "
+                f"TUYỆT ĐỐI KHÔNG xuất phiếu chốt vé như thể đủ tiền, và TUYỆT ĐỐI KHÔNG tự ý gọi nạp tiền!"
+            ).replace(",", ".")
+        elif has_time_deviation:
             status = "needs_time_clarification"
             instruction = (
                 f"BẮT BUỘC HỎI Ý KIẾN KHÁCH HÀNG: Thông báo rõ ràng rằng ngày {day_entry.get('day_vn')} "
@@ -356,17 +437,13 @@ def smart_flight_search(
                 f"TUYỆT ĐỐI KHÔNG xuất phiếu chốt vé như thể đã khớp giờ!"
             )
         else:
-            time_check_msg = f"✅ Khung giờ: {time_label} (Chuyến cất cánh lúc {f_info['dep_time']})"
             status = "success"
-            instruction = "HÃY XUẤT PHIẾU ĐỀ XUẤT VÉ NÀY KÈM CÁC ĐIỀU KIỆN ĐÃ CHECK ĐỂ KHÁCH HÀNG XÁC NHẬN. TUYỆT ĐỐI CHƯA GỌI book_flight TRỪ TIỀN KHI CHƯA ĐƯỢC KHÁCH XÁC NHẬN!"
-
-        conditions_summary = {
-            "schedule_check": f"✅ Lịch bay: Có chuyến bay vào {day_entry.get('day_vn')} ({day_entry.get('day_of_week')})",
-            "time_check": time_check_msg,
-            "route_check": f"✅ Tuyến bay: {from_str} -> {to_str}",
-            "seats_check": f"✅ Ghế trống: Hạng {target_class} còn {best['seats_left']} ghế",
-            "wallet_check": f"✅ Số dư ví: {wallet_balance:,} VND >= Giá vé {best['price']:,} VND (ĐỦ ĐIỀU KIỆN)".replace(",", "."),
-        }
+            instruction = (
+                f"HÃY XUẤT PHIẾU ĐỀ XUẤT VÉ HOÀN CHỈNH CHO {passengers_count} HÀNH KHÁCH "
+                f"(Đơn giá: {unit_price:,} VND, Tổng tiền: {total_price:,} VND, Số dư ví còn lại sau trừ: {remaining_str}). "
+                f"Yêu cầu khách cung cấp đầy đủ {passengers_count} họ tên hành khách và nhắn 'Xác nhận' để đặt vé. "
+                f"TUYỆT ĐỐI CHƯA GỌI book_flight TRỪ TIỀN KHI CHƯA ĐƯỢC KHÁCH XÁC NHẬN!"
+            ).replace(",", ".")
 
         return {
             "status": status,
@@ -374,7 +451,9 @@ def smart_flight_search(
             "requested_time": exact_time,
             "closest_departure_time": f_info.get("dep_time"),
             "time_difference_hours": time_diff_hours,
-            "message": "Đã kiểm tra lịch trình, ghế trống và số dư ví.",
+            "passengers_count": passengers_count,
+            "can_afford": can_afford,
+            "message": "Đã kiểm tra lịch trình, ghế trống cho số lượng khách và số dư ví.",
             "conditions_verified": conditions_summary,
             "draft_ticket": {
                 "flight_id": f_info.get("flight_id"),
@@ -386,11 +465,14 @@ def smart_flight_search(
                 "arr_time": f_info.get("arr_time"),
                 "day": day_entry.get("day_vn"),
                 "seat_class": target_class,
-                "unit_price": f"{best['price']:,} VND".replace(",", "."),
-                "price_raw": best["price"],
+                "passengers_count": passengers_count,
+                "unit_price": f"{unit_price:,} VND".replace(",", "."),
+                "total_price": f"{total_price:,} VND".replace(",", "."),
+                "price_raw": unit_price,
+                "total_price_raw": total_price,
                 "seats_left": best["seats_left"],
                 "current_wallet_balance": f"{wallet_balance:,} VND".replace(",", "."),
-                "remaining_balance_after": f"{(wallet_balance - best['price']):,} VND".replace(",", "."),
+                "remaining_balance_after": remaining_str,
             },
             "instruction_for_agent": instruction,
         }
